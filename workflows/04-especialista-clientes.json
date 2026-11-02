@@ -1,0 +1,279 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "pergunta"
+            }
+          ]
+        }
+      },
+      "id": "587956de-ff23-4d68-b478-d48b0cf806a6",
+      "name": "Recebe pergunta",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const expand = 'Orders($select=OrderID,OrderDate;$expand=Order_Details($select=UnitPrice,Quantity,Discount;$expand=Product($select=ProductName)))';\nconst url = 'https://services.odata.org/V4/Northwind/Northwind.svc/Customers?$format=json&$select=CustomerID,CompanyName,City,Country&$expand=' + encodeURIComponent(expand);\nreturn [{ json: { url, hoje: '1998-05-06' } }];"
+      },
+      "id": "f81fb6e9-f796-4fc6-886a-c7d5a1e49ee1",
+      "name": "Monta consulta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ 'https://services.odata.org/V4/Northwind/Northwind.svc/' + $response.body['@odata.nextLink'] }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body['@odata.nextLink'] }}",
+              "limitPagesFetched": true,
+              "maxRequests": 20
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "6de1de3b-db76-4c37-8130-af008465687d",
+      "name": "Busca clientes na API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const hoje = $('Monta consulta').first().json.hoje;\nconst paginas = $input.all();\nconst clientes = paginas.flatMap(p => p.json.value || []).map(c => {\n  const produtos = {};\n  const pedidos = (c.Orders || []).map(o => {\n    let valor = 0;\n    for (const d of o.Order_Details || []) {\n      const liquido = d.UnitPrice * d.Quantity * (1 - d.Discount);\n      valor += liquido;\n      produtos[d.Product.ProductName] = (produtos[d.Product.ProductName] || 0) + liquido;\n    }\n    return { pedido: o.OrderID, data: o.OrderDate.slice(0, 10), valor };\n  }).sort((a, b) => a.data.localeCompare(b.data));\n  return { id: c.CustomerID, nome: c.CompanyName, cidade: c.City, pais: c.Country, pedidos, produtos };\n});\nreturn [{ json: { hoje, paginas: paginas.length, clientes } }];"
+      },
+      "id": "a5c3d64a-238c-4c4a-92cb-3c376ac1d9d1",
+      "name": "Normaliza clientes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Recebe pergunta').first().json.pergunta }}",
+        "options": {
+          "systemMessage": "Você é a especialista em clientes da Northwind Traders, uma distribuidora de alimentos. Os clientes e seus pedidos já foram buscados na API e estão disponíveis para as suas ferramentas.\n\nA base termina em 06/05/1998. Considere essa data como hoje.\n\nComo escolher a ferramenta:\n- Novos, recorrentes, concentração e visão geral da carteira: get_carteira.\n- Clientes parados ou que deixaram de comprar: get_clientes_inativos.\n- Dados de um cliente específico: ficha_cliente.\n\nRegras:\n- Use as datas informadas na pergunta, em AAAA-MM-DD.\n- Cliente novo é o que fez a primeira compra da história dentro do período.\n- Entregue todos os campos que a ferramenta devolver, sem somar, arredondar nem recalcular, e inclua o status.\n- Em MAIS_DE_UM, devolva as opções para a pessoa escolher.\n- Em NAO_ENCONTRADO, diga que o cliente não existe na base.\n- Em SEM_DADOS, diga que nenhum cliente atende à condição.\n- Nunca invente valor.",
+          "maxIterations": 4,
+          "enableStreaming": false
+        }
+      },
+      "id": "33ba0ba9-05cf-4232-b1e1-3bd383ec5871",
+      "name": "Especialista em clientes",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1008,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-6-luna",
+          "mode": "list",
+          "cachedResultName": "gpt-6-luna"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "050a537f-5fa7-4afa-ab22-29135e2f16be",
+      "name": "Modelo de clientes",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        768,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Calcula a carteira no período: clientes que compraram, novos, recorrentes, faturamento por cliente e quanto os cinco maiores concentram.",
+        "jsCode": "const d = $('Normaliza clientes').first().json;\nconst inicio = query.inicio || '1996-01-01';\nconst fim = query.fim || d.hoje;\nconst r2 = v => Math.round(v * 100) / 100;\nconst ativos = d.clientes.map(c => {\n  const lista = c.pedidos.filter(p => p.data >= inicio && p.data <= fim);\n  return { nome: c.nome, pais: c.pais, pedidos: lista.length, valor: lista.reduce((s, p) => s + p.valor, 0), novo: c.pedidos.length > 0 && c.pedidos[0].data >= inicio && c.pedidos[0].data <= fim };\n}).filter(c => c.pedidos > 0).sort((a, b) => b.valor - a.valor);\nif (!ativos.length) return JSON.stringify({ status: 'SEM_DADOS', inicio, fim });\nconst total = ativos.reduce((s, c) => s + c.valor, 0);\nconst cinco = ativos.slice(0, 5);\nconst somaCinco = cinco.reduce((s, c) => s + c.valor, 0);\nreturn JSON.stringify({ status: 'OK', inicio, fim, clientes_cadastrados: d.clientes.length, clientes_com_compra: ativos.length, novos: ativos.filter(c => c.novo).length, recorrentes: ativos.filter(c => !c.novo).length, faturamento: r2(total), faturamento_medio_por_cliente: r2(total / ativos.length), concentracao_cinco_maiores_pct: r2(somaCinco / total * 100), cinco_maiores: cinco.map(c => ({ nome: c.nome, pais: c.pais, pedidos: c.pedidos, faturamento: r2(c.valor) })) });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"inicio\":{\"type\":\"string\",\"description\":\"Data inicial AAAA-MM-DD. Opcional.\"},\"fim\":{\"type\":\"string\",\"description\":\"Data final AAAA-MM-DD. Opcional.\"}}}"
+      },
+      "id": "14b02dd3-4908-43da-9504-be8314339c78",
+      "name": "get_carteira",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        912,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Lista clientes sem compra há mais de X dias, com a última compra e o histórico faturado, e conta os cadastrados que nunca compraram.",
+        "jsCode": "const d = $('Normaliza clientes').first().json;\nconst r2 = v => Math.round(v * 100) / 100;\nconst corte = Number(query.dias) || 90;\nconst diasEntre = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);\nconst nunca = d.clientes.filter(c => !c.pedidos.length).map(c => c.nome);\nconst parados = d.clientes.filter(c => c.pedidos.length).map(c => {\n  const ultima = c.pedidos[c.pedidos.length - 1].data;\n  return { nome: c.nome, pais: c.pais, ultima_compra: ultima, dias_sem_comprar: diasEntre(ultima, d.hoje), pedidos: c.pedidos.length, historico: c.pedidos.reduce((s, p) => s + p.valor, 0) };\n}).filter(c => c.dias_sem_comprar > corte).sort((a, b) => b.historico - a.historico);\nif (!parados.length && !nunca.length) return JSON.stringify({ status: 'SEM_DADOS', dias: corte });\nconst limite = Math.min(Number(query.limite) || 10, 30);\nreturn JSON.stringify({ status: 'OK', data_referencia: d.hoje, dias: corte, inativos: parados.length, historico_inativos: r2(parados.reduce((s, c) => s + c.historico, 0)), nunca_compraram: nunca, listados: Math.min(limite, parados.length), clientes: parados.slice(0, limite).map(c => ({ ...c, historico: r2(c.historico) })) });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"dias\":{\"type\":\"number\",\"description\":\"Dias sem comprar. Padrão 90.\"},\"limite\":{\"type\":\"number\",\"description\":\"Quantos clientes listar. Padrão 10.\"}}}"
+      },
+      "id": "f5a838ff-0d41-45e2-9e5a-2c9afbae3e85",
+      "name": "get_clientes_inativos",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        1040,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Monta a ficha de um cliente: local, pedidos, faturamento, ticket médio, primeira e última compra, intervalo médio entre compras e produtos mais comprados.",
+        "jsCode": "const d = $('Normaliza clientes').first().json;\nconst limpa = s => String(s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();\nconst termo = limpa(query.nome).trim();\nif (!termo) return JSON.stringify({ status: 'PARAMETRO_INVALIDO', campo: 'nome' });\nconst achados = d.clientes.filter(c => limpa(c.id) === termo || limpa(c.nome).includes(termo));\nif (!achados.length) return JSON.stringify({ status: 'NAO_ENCONTRADO', nome: query.nome });\nif (achados.length > 1) return JSON.stringify({ status: 'MAIS_DE_UM', opcoes: achados.slice(0, 10).map(c => c.nome) });\nconst c = achados[0];\nconst r2 = v => Math.round(v * 100) / 100;\nconst diasEntre = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);\nconst base = { status: 'OK', cliente: c.nome, codigo: c.id, cidade: c.cidade, pais: c.pais, pedidos: c.pedidos.length };\nif (!c.pedidos.length) return JSON.stringify({ ...base, faturamento: 0 });\nconst total = c.pedidos.reduce((s, p) => s + p.valor, 0);\nconst primeira = c.pedidos[0].data;\nconst ultima = c.pedidos[c.pedidos.length - 1].data;\nconst produtos = Object.entries(c.produtos).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([nome, valor]) => ({ nome, faturamento: r2(valor) }));\nreturn JSON.stringify({ ...base, faturamento: r2(total), ticket_medio: r2(total / c.pedidos.length), primeira_compra: primeira, ultima_compra: ultima, dias_sem_comprar: diasEntre(ultima, d.hoje), intervalo_medio_dias: c.pedidos.length > 1 ? r2(diasEntre(primeira, ultima) / (c.pedidos.length - 1)) : null, produtos_mais_comprados: produtos });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"nome\":{\"type\":\"string\",\"description\":\"Parte do nome do cliente ou código de cinco letras.\"}},\"required\":[\"nome\"]}"
+      },
+      "id": "62474cd2-dedc-45a5-8416-0ab9f58b7cbe",
+      "name": "ficha_cliente",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        1184,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Especialista em clientes\nBusca clientes e pedidos na API, percorre as paginas e normaliza. As tools calculam carteira, inatividade e a ficha de cada cliente.",
+        "height": 170,
+        "width": 620,
+        "color": 2
+      },
+      "id": "5528115f-57d3-4db1-8c8f-6a53c838cc71",
+      "name": "Sticky Note b938bf53",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        64
+      ]
+    }
+  ],
+  "connections": {
+    "Recebe pergunta": {
+      "main": [
+        [
+          {
+            "node": "Monta consulta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monta consulta": {
+      "main": [
+        [
+          {
+            "node": "Busca clientes na API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca clientes na API": {
+      "main": [
+        [
+          {
+            "node": "Normaliza clientes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normaliza clientes": {
+      "main": [
+        [
+          {
+            "node": "Especialista em clientes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo de clientes": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Especialista em clientes",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_carteira": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em clientes",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_clientes_inativos": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em clientes",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ficha_cliente": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em clientes",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "04 - Northwind: especialista em clientes",
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

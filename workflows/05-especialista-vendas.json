@@ -1,0 +1,319 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "pergunta"
+            },
+            {
+              "name": "inicio"
+            },
+            {
+              "name": "fim"
+            },
+            {
+              "name": "comparar_inicio"
+            },
+            {
+              "name": "comparar_fim"
+            }
+          ]
+        }
+      },
+      "id": "c57a4f23-e76c-47e1-88a0-a19d10982bfc",
+      "name": "Recebe pergunta",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const e = $input.first().json;\nconst hoje = '1998-05-06';\nconst data = s => /^\\d{4}-\\d{2}-\\d{2}$/.test(s || '') ? s : '';\nconst inicio = data(e.inicio);\nconst fim = data(e.fim);\nconst inicios = [inicio, data(e.comparar_inicio)].filter(Boolean).sort();\nconst fins = [fim, data(e.comparar_fim)].filter(Boolean).sort();\nconst de = inicios[0] || '';\nconst ate = fins[fins.length - 1] || '';\nconst diaSeguinte = s => new Date(Date.parse(s + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);\nconst filtros = [];\nif (de) filtros.push('OrderDate ge ' + de + 'T00:00:00Z');\nif (ate) filtros.push('OrderDate lt ' + diaSeguinte(ate) + 'T00:00:00Z');\nconst expand = 'Customer($select=CompanyName),Employee($select=FirstName,LastName),Order_Details($select=ProductID,UnitPrice,Quantity,Discount;$expand=Product($select=ProductName;$expand=Category($select=CategoryName)))';\nlet url = 'https://services.odata.org/V4/Northwind/Northwind.svc/Orders?$format=json&$select=OrderID,OrderDate,Freight,ShipCountry&$expand=' + encodeURIComponent(expand);\nif (filtros.length) url += '&$filter=' + encodeURIComponent(filtros.join(' and '));\nreturn [{ json: { url, hoje, inicio: inicio || '1996-07-04', fim: fim || hoje, base_de: de || '1996-01-01', base_ate: ate || '1998-12-31' } }];"
+      },
+      "id": "b3e4aa54-cf2b-46f5-8123-6db3f34fcaba",
+      "name": "Monta consulta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ 'https://services.odata.org/V4/Northwind/Northwind.svc/' + $response.body['@odata.nextLink'] }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body['@odata.nextLink'] }}",
+              "limitPagesFetched": true,
+              "maxRequests": 20
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "25828a7e-1850-410f-ad38-80f44e4329d0",
+      "name": "Busca pedidos na API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const m = $('Monta consulta').first().json;\nconst paginas = $input.all();\nconst brutos = paginas.flatMap(p => p.json.value || []);\nconst pedidos = brutos.map(o => ({ pedido: o.OrderID, data: o.OrderDate.slice(0, 10), frete: o.Freight }));\nconst linhas = brutos.flatMap(o => (o.Order_Details || []).map(d => ({\n  pedido: o.OrderID,\n  data: o.OrderDate.slice(0, 10),\n  mes: o.OrderDate.slice(0, 7),\n  cliente: o.Customer ? o.Customer.CompanyName : 'Sem cliente',\n  pais: o.ShipCountry,\n  vendedor: o.Employee ? o.Employee.FirstName + ' ' + o.Employee.LastName : 'Sem vendedor',\n  produto: d.Product.ProductName,\n  categoria: d.Product.Category ? d.Product.Category.CategoryName : 'Sem categoria',\n  quantidade: d.Quantity,\n  liquido: d.UnitPrice * d.Quantity * (1 - d.Discount)\n})));\nreturn [{ json: { ...m, paginas: paginas.length, pedidos, linhas } }];"
+      },
+      "id": "1b49cd22-6133-4067-974d-9094875ad0fc",
+      "name": "Normaliza vendas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Recebe pergunta').first().json.pergunta }}",
+        "options": {
+          "systemMessage": "Você é a especialista em vendas da Northwind Traders, uma distribuidora de alimentos. Os pedidos do período já foram buscados na API e estão disponíveis para as suas ferramentas.\n\nA base termina em 06/05/1998. Considere essa data como hoje.\n\nFaturamento é sempre líquido de desconto e não inclui frete.\n\nComo escolher a ferramenta:\n- Total, ticket, frete, média ou projeção: get_resumo.\n- Melhor ou pior produto, categoria, vendedor, cliente ou país, e evolução mês a mês: get_ranking.\n- Curva ABC ou produtos que concentram o faturamento: get_curva_abc.\n- Comparação entre dois períodos ou crescimento: comparar_periodos.\n\nRegras:\n- Use as datas informadas na pergunta, em AAAA-MM-DD.\n- Pode chamar mais de uma ferramenta se a pergunta exigir.\n- Entregue todos os campos que a ferramenta devolver, sem somar, arredondar nem recalcular, e inclua o status.\n- Em PERIODO_NAO_CARREGADO, diga que o período não foi enviado na consulta.\n- Em SEM_DADOS, diga que não há pedidos no período.\n- Nunca invente valor.",
+          "maxIterations": 4,
+          "enableStreaming": false
+        }
+      },
+      "id": "10fcd549-c955-4213-9ddb-eaaf576f3380",
+      "name": "Especialista em vendas",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        928,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-6-luna",
+          "mode": "list",
+          "cachedResultName": "gpt-6-luna"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "797a9ace-e80c-40df-960b-eee554eeeb3b",
+      "name": "Modelo de vendas",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        768,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Calcula faturamento líquido, pedidos, ticket médio, frete e média diária do período. Em período que ainda não terminou, calcula também a projeção. Sem datas, usa o período carregado.",
+        "jsCode": "const d = $('Normaliza vendas').first().json;\nconst inicio = query.inicio || d.inicio;\nconst fim = query.fim || d.fim;\nif (inicio < d.base_de || fim > d.base_ate) return JSON.stringify({ status: 'PERIODO_NAO_CARREGADO', carregado: [d.base_de, d.base_ate] });\nconst noPeriodo = x => x.data >= inicio && x.data <= fim;\nconst linhas = d.linhas.filter(noPeriodo);\nconst pedidos = d.pedidos.filter(noPeriodo);\nif (!pedidos.length) return JSON.stringify({ status: 'SEM_DADOS', inicio, fim });\nconst r2 = v => Math.round(v * 100) / 100;\nconst dias = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000) + 1;\nconst faturamento = linhas.reduce((s, x) => s + x.liquido, 0);\nconst frete = pedidos.reduce((s, x) => s + x.frete, 0);\nconst corridos = dias(inicio, fim < d.hoje ? fim : d.hoje);\nconst saida = { status: 'OK', inicio, fim, faturamento: r2(faturamento), pedidos: pedidos.length, ticket_medio: r2(faturamento / pedidos.length), frete: r2(frete), dias_corridos: corridos, media_diaria: r2(faturamento / corridos) };\nif (fim > d.hoje) {\n  saida.periodo_parcial = true;\n  saida.dados_ate = d.hoje;\n  saida.dias_do_periodo = dias(inicio, fim);\n  saida.projecao = r2(faturamento / corridos * saida.dias_do_periodo);\n}\nreturn JSON.stringify(saida);",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"inicio\":{\"type\":\"string\",\"description\":\"Data inicial AAAA-MM-DD. Opcional.\"},\"fim\":{\"type\":\"string\",\"description\":\"Data final AAAA-MM-DD. Opcional.\"}}}"
+      },
+      "id": "70948a96-c340-4433-8bac-d0f791ac3d4b",
+      "name": "get_resumo",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        912,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Agrupa o faturamento por produto, categoria, vendedor, cliente, pais ou mes, e calcula participação, pedidos e quantidade. Agrupamento por mes sai em ordem de data, completo.",
+        "jsCode": "const d = $('Normaliza vendas').first().json;\nconst dimensao = query.dimensao;\nif (!['produto', 'categoria', 'vendedor', 'cliente', 'pais', 'mes'].includes(dimensao)) return JSON.stringify({ status: 'PARAMETRO_INVALIDO', campo: 'dimensao' });\nconst inicio = query.inicio || d.inicio;\nconst fim = query.fim || d.fim;\nif (inicio < d.base_de || fim > d.base_ate) return JSON.stringify({ status: 'PERIODO_NAO_CARREGADO', carregado: [d.base_de, d.base_ate] });\nconst linhas = d.linhas.filter(x => x.data >= inicio && x.data <= fim);\nif (!linhas.length) return JSON.stringify({ status: 'SEM_DADOS', inicio, fim });\nconst r2 = v => Math.round(v * 100) / 100;\nconst grupos = {};\nfor (const l of linhas) {\n  const chave = l[dimensao];\n  grupos[chave] = grupos[chave] || { nome: chave, valor: 0, quantidade: 0, pedidos: new Set() };\n  grupos[chave].valor += l.liquido;\n  grupos[chave].quantidade += l.quantidade;\n  grupos[chave].pedidos.add(l.pedido);\n}\nconst total = linhas.reduce((s, x) => s + x.liquido, 0);\nconst lista = Object.values(grupos);\nif (dimensao === 'mes') lista.sort((a, b) => a.nome.localeCompare(b.nome));\nelse lista.sort((a, b) => query.ordem === 'menor' ? a.valor - b.valor : b.valor - a.valor);\nconst limite = dimensao === 'mes' ? lista.length : Math.min(Number(query.limite) || 10, 30);\nconst posicoes = lista.slice(0, limite).map((g, i) => ({ posicao: i + 1, nome: g.nome, faturamento: r2(g.valor), participacao_pct: r2(g.valor / total * 100), pedidos: g.pedidos.size, quantidade: g.quantidade }));\nreturn JSON.stringify({ status: 'OK', inicio, fim, dimensao, total_geral: r2(total), grupos_no_periodo: lista.length, posicoes });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"dimensao\":{\"type\":\"string\",\"enum\":[\"produto\",\"categoria\",\"vendedor\",\"cliente\",\"pais\",\"mes\"]},\"inicio\":{\"type\":\"string\",\"description\":\"Data inicial AAAA-MM-DD. Opcional.\"},\"fim\":{\"type\":\"string\",\"description\":\"Data final AAAA-MM-DD. Opcional.\"},\"limite\":{\"type\":\"number\",\"description\":\"Quantas posições devolver. Padrão 10.\"},\"ordem\":{\"type\":\"string\",\"enum\":[\"maior\",\"menor\"],\"description\":\"Padrão maior.\"}},\"required\":[\"dimensao\"]}"
+      },
+      "id": "2afbd6f5-7176-4892-acf5-3573d035b452",
+      "name": "get_ranking",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        1040,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Calcula a curva ABC dos produtos por faturamento: A até 80% acumulado, B até 95%, C o restante.",
+        "jsCode": "const d = $('Normaliza vendas').first().json;\nconst inicio = query.inicio || d.inicio;\nconst fim = query.fim || d.fim;\nif (inicio < d.base_de || fim > d.base_ate) return JSON.stringify({ status: 'PERIODO_NAO_CARREGADO', carregado: [d.base_de, d.base_ate] });\nconst linhas = d.linhas.filter(x => x.data >= inicio && x.data <= fim);\nif (!linhas.length) return JSON.stringify({ status: 'SEM_DADOS', inicio, fim });\nconst r2 = v => Math.round(v * 100) / 100;\nconst porProduto = {};\nfor (const l of linhas) porProduto[l.produto] = (porProduto[l.produto] || 0) + l.liquido;\nconst itens = Object.entries(porProduto).map(([nome, valor]) => ({ nome, valor })).sort((a, b) => b.valor - a.valor);\nconst total = itens.reduce((s, x) => s + x.valor, 0);\nlet acumulado = 0;\nconst classes = { A: { produtos: 0, valor: 0 }, B: { produtos: 0, valor: 0 }, C: { produtos: 0, valor: 0 } };\nfor (const i of itens) {\n  const antes = acumulado / total * 100;\n  i.classe = antes < 80 ? 'A' : antes < 95 ? 'B' : 'C';\n  classes[i.classe].produtos += 1;\n  classes[i.classe].valor += i.valor;\n  acumulado += i.valor;\n}\nconst resumo = ['A', 'B', 'C'].map(c => ({ classe: c, produtos: classes[c].produtos, faturamento: r2(classes[c].valor), participacao_pct: r2(classes[c].valor / total * 100) }));\nconst principais = itens.filter(i => i.classe === 'A').slice(0, 5).map(i => ({ nome: i.nome, faturamento: r2(i.valor) }));\nreturn JSON.stringify({ status: 'OK', inicio, fim, total_geral: r2(total), produtos_vendidos: itens.length, classes: resumo, principais_da_classe_a: principais });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"inicio\":{\"type\":\"string\",\"description\":\"Data inicial AAAA-MM-DD. Opcional.\"},\"fim\":{\"type\":\"string\",\"description\":\"Data final AAAA-MM-DD. Opcional.\"}}}"
+      },
+      "id": "5792e947-2f88-41fc-9550-fbf41ca35ab8",
+      "name": "get_curva_abc",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        1200,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Compara dois períodos e calcula a variação em valor e em percentual de faturamento, pedidos e ticket médio.",
+        "jsCode": "const d = $('Normaliza vendas').first().json;\nconst datas = [query.atual_inicio, query.atual_fim, query.base_inicio, query.base_fim];\nif (datas.some(x => !x)) return JSON.stringify({ status: 'PARAMETRO_INVALIDO', campo: 'datas' });\nif (datas.some(x => x < d.base_de || x > d.base_ate)) return JSON.stringify({ status: 'PERIODO_NAO_CARREGADO', carregado: [d.base_de, d.base_ate] });\nconst r2 = v => Math.round(v * 100) / 100;\nconst medir = (ini, fim) => {\n  const dentro = x => x.data >= ini && x.data <= fim;\n  const faturamento = d.linhas.filter(dentro).reduce((s, x) => s + x.liquido, 0);\n  const pedidos = d.pedidos.filter(dentro).length;\n  return { inicio: ini, fim, faturamento, pedidos, ticket_medio: pedidos ? faturamento / pedidos : 0 };\n};\nconst variacao = (a, b) => ({ diferenca: r2(a - b), percentual: b ? r2((a - b) / b * 100) : null });\nconst atual = medir(query.atual_inicio, query.atual_fim);\nconst base = medir(query.base_inicio, query.base_fim);\nif (!atual.pedidos && !base.pedidos) return JSON.stringify({ status: 'SEM_DADOS' });\nconst fmt = p => ({ ...p, faturamento: r2(p.faturamento), ticket_medio: r2(p.ticket_medio) });\nreturn JSON.stringify({ status: 'OK', atual: fmt(atual), base: fmt(base), variacao: { faturamento: variacao(atual.faturamento, base.faturamento), pedidos: variacao(atual.pedidos, base.pedidos), ticket_medio: variacao(atual.ticket_medio, base.ticket_medio) } });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"atual_inicio\":{\"type\":\"string\",\"description\":\"AAAA-MM-DD\"},\"atual_fim\":{\"type\":\"string\",\"description\":\"AAAA-MM-DD\"},\"base_inicio\":{\"type\":\"string\",\"description\":\"AAAA-MM-DD do período usado como referência\"},\"base_fim\":{\"type\":\"string\",\"description\":\"AAAA-MM-DD do período usado como referência\"}},\"required\":[\"atual_inicio\",\"atual_fim\",\"base_inicio\",\"base_fim\"]}"
+      },
+      "id": "a2b8f75d-b932-4e92-9ada-a11c4a9f5770",
+      "name": "comparar_periodos",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        1392,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Especialista em vendas\nBusca os pedidos do periodo na API, percorre todas as paginas e normaliza. O agente escolhe a tool. As contas ficam no codigo de cada tool.",
+        "height": 170,
+        "width": 620,
+        "color": 5
+      },
+      "id": "992c6de7-9965-49a8-8e92-cd8b73395e08",
+      "name": "Sticky Note 26908fd2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        64
+      ]
+    }
+  ],
+  "connections": {
+    "Recebe pergunta": {
+      "main": [
+        [
+          {
+            "node": "Monta consulta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monta consulta": {
+      "main": [
+        [
+          {
+            "node": "Busca pedidos na API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca pedidos na API": {
+      "main": [
+        [
+          {
+            "node": "Normaliza vendas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normaliza vendas": {
+      "main": [
+        [
+          {
+            "node": "Especialista em vendas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo de vendas": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Especialista em vendas",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_resumo": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em vendas",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_ranking": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em vendas",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_curva_abc": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em vendas",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "comparar_periodos": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em vendas",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "05 - Northwind: especialista em vendas",
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

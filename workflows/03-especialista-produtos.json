@@ -1,0 +1,279 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "pergunta"
+            }
+          ]
+        }
+      },
+      "id": "3609d020-d14b-4261-aeaf-cebba0ea30f2",
+      "name": "Recebe pergunta",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const expand = 'Category($select=CategoryName),Supplier($select=CompanyName,Country)';\nconst url = 'https://services.odata.org/V4/Northwind/Northwind.svc/Products?$format=json&$select=ProductID,ProductName,QuantityPerUnit,UnitPrice,UnitsInStock,UnitsOnOrder,ReorderLevel,Discontinued&$expand=' + encodeURIComponent(expand);\nreturn [{ json: { url } }];"
+      },
+      "id": "4334bd76-8413-4b85-a8c3-9012a8631843",
+      "name": "Monta consulta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ 'https://services.odata.org/V4/Northwind/Northwind.svc/' + $response.body['@odata.nextLink'] }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body['@odata.nextLink'] }}",
+              "limitPagesFetched": true,
+              "maxRequests": 20
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "feb9fcd8-8c01-4c7c-a634-5b9133a4f73e",
+      "name": "Busca produtos na API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const paginas = $input.all();\nconst produtos = paginas.flatMap(p => p.json.value || []).map(p => ({\n  id: p.ProductID,\n  nome: p.ProductName,\n  embalagem: p.QuantityPerUnit,\n  categoria: p.Category ? p.Category.CategoryName : 'Sem categoria',\n  fornecedor: p.Supplier ? p.Supplier.CompanyName : 'Sem fornecedor',\n  pais_fornecedor: p.Supplier ? p.Supplier.Country : null,\n  preco: p.UnitPrice,\n  estoque: p.UnitsInStock,\n  a_caminho: p.UnitsOnOrder,\n  minimo: p.ReorderLevel,\n  ativo: !p.Discontinued\n}));\nreturn [{ json: { paginas: paginas.length, produtos } }];"
+      },
+      "id": "02c02037-c328-4604-8176-0f162449d454",
+      "name": "Normaliza produtos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Recebe pergunta').first().json.pergunta }}",
+        "options": {
+          "systemMessage": "Você é a especialista em produtos e estoque da Northwind Traders, uma distribuidora de alimentos. O catálogo já foi buscado na API e está disponível para as suas ferramentas.\n\nO estoque é a posição atual, sem período.\n\nComo escolher a ferramenta:\n- Preço, saldo ou dados de um produto: buscar_produto.\n- Estoque baixo, falta e reposição: get_estoque_baixo.\n- Valor do estoque: get_valor_estoque.\n\nRegras:\n- O catálogo está em inglês e nos idiomas originais dos produtos. Se a pergunta vier em português, traduza o termo antes de buscar. Se não achar, tente outra palavra uma vez.\n- As categorias são Beverages, Condiments, Confections, Dairy Products, Grains/Cereals, Meat/Poultry, Produce e Seafood.\n- Entregue todos os campos que a ferramenta devolver, sem somar, arredondar nem recalcular, e inclua o status.\n- Em NAO_ENCONTRADO, diga que o produto não existe no catálogo.\n- Em SEM_DADOS, diga que nenhum produto atende à condição.\n- Nunca invente valor.",
+          "maxIterations": 4,
+          "enableStreaming": false
+        }
+      },
+      "id": "8146cf9a-1623-412a-89d4-2590baa97176",
+      "name": "Especialista em produtos",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1008,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-6-luna",
+          "mode": "list",
+          "cachedResultName": "gpt-6-luna"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "308073b2-7380-4bde-a9e3-a0ee76602af8",
+      "name": "Modelo de produtos",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        768,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Procura produtos por palavras do nome, categoria ou fornecedor, ignora maiúsculas e acentos, e devolve preço, estoque e situação.",
+        "jsCode": "const d = $('Normaliza produtos').first().json;\nconst limpa = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();\nconst palavras = limpa(query.termo).split(/\\s+/).filter(p => p.length > 1);\nif (!palavras.length) return JSON.stringify({ status: 'PARAMETRO_INVALIDO', campo: 'termo' });\nconst notas = d.produtos.map(p => {\n  const texto = limpa(p.nome + ' ' + p.categoria + ' ' + p.fornecedor).split(/[^a-z0-9]+/);\n  return { p, nota: palavras.filter(w => texto.some(t => t.startsWith(w))).length };\n}).filter(x => x.nota > 0);\nif (!notas.length) return JSON.stringify({ status: 'NAO_ENCONTRADO', termo: query.termo });\nconst melhor = Math.max(...notas.map(x => x.nota));\nconst achados = notas.filter(x => x.nota === melhor).slice(0, 10).map(x => x.p);\nreturn JSON.stringify({ status: 'OK', encontrados: achados.length, produtos: achados });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"termo\":{\"type\":\"string\",\"description\":\"Palavras do produto, como aparecem no cadastro, geralmente em inglês.\"}},\"required\":[\"termo\"]}"
+      },
+      "id": "0016ac67-68a7-4612-a619-b440d6101f62",
+      "name": "buscar_produto",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        912,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Lista produtos ativos com estoque igual ou abaixo do mínimo, calcula quanto falta para o mínimo e aponta os que continuam descobertos mesmo com o que está a caminho.",
+        "jsCode": "const d = $('Normaliza produtos').first().json;\nconst cat = String(query.categoria || '').toLowerCase();\nconst itens = d.produtos.filter(p => p.ativo && p.estoque <= p.minimo && (!cat || p.categoria.toLowerCase() === cat)).map(p => ({ nome: p.nome, categoria: p.categoria, estoque: p.estoque, minimo: p.minimo, a_caminho: p.a_caminho, falta_para_minimo: Math.max(p.minimo - p.estoque, 0), descoberto: p.estoque + p.a_caminho < p.minimo }));\nif (!itens.length) return JSON.stringify({ status: 'SEM_DADOS' });\nconst limite = Number(query.limite) || itens.length;\nconst lista = itens.sort((a, b) => b.falta_para_minimo - a.falta_para_minimo || a.nome.localeCompare(b.nome)).slice(0, limite);\nreturn JSON.stringify({ status: 'OK', abaixo_do_minimo: itens.length, zerados: itens.filter(i => i.estoque === 0).length, descobertos: itens.filter(i => i.descoberto).length, listados: lista.length, itens: lista });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"categoria\":{\"type\":\"string\",\"description\":\"Nome da categoria em inglês. Opcional.\"},\"limite\":{\"type\":\"number\",\"description\":\"Quantos itens listar. Sem limite, traz todos.\"}}}"
+      },
+      "id": "b4ab228f-ccce-4b05-b4b7-47bd13532f8e",
+      "name": "get_estoque_baixo",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        1040,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Calcula o valor do estoque a preço de venda por categoria e separa ativos de descontinuados. A base não tem preço de custo.",
+        "jsCode": "const d = $('Normaliza produtos').first().json;\nconst cat = String(query.categoria || '').toLowerCase();\nconst base = d.produtos.filter(p => !cat || p.categoria.toLowerCase() === cat);\nif (!base.length) return JSON.stringify({ status: 'SEM_DADOS' });\nconst r2 = v => Math.round(v * 100) / 100;\nconst valorDe = lista => lista.reduce((s, p) => s + p.preco * p.estoque, 0);\nconst ativos = base.filter(p => p.ativo);\nconst descontinuados = base.filter(p => !p.ativo);\nconst grupos = {};\nfor (const p of ativos) (grupos[p.categoria] = grupos[p.categoria] || []).push(p);\nconst categorias = Object.entries(grupos).map(([nome, lista]) => ({ categoria: nome, produtos: lista.length, unidades: lista.reduce((s, p) => s + p.estoque, 0), valor: r2(valorDe(lista)) })).sort((a, b) => b.valor - a.valor);\nreturn JSON.stringify({ status: 'OK', valor_total: r2(valorDe(base)), valor_ativos: r2(valorDe(ativos)), unidades_ativos: ativos.reduce((s, p) => s + p.estoque, 0), produtos_ativos: ativos.length, valor_descontinuados: r2(valorDe(descontinuados)), unidades_descontinuados: descontinuados.reduce((s, p) => s + p.estoque, 0), produtos_descontinuados: descontinuados.length, categorias });",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"categoria\":{\"type\":\"string\",\"description\":\"Nome da categoria em inglês. Opcional.\"}}}"
+      },
+      "id": "5ec86456-5b94-4f2d-861d-cfb8c5149691",
+      "name": "get_valor_estoque",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        1184,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Especialista em produtos\nBusca o catalogo na API e normaliza. As tools fazem a busca por palavras e calculam reposicao e valor do estoque.",
+        "height": 170,
+        "width": 620,
+        "color": 3
+      },
+      "id": "e30e5dcc-c2cf-4503-a694-e847289deb5d",
+      "name": "Sticky Note 82e02578",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        64
+      ]
+    }
+  ],
+  "connections": {
+    "Recebe pergunta": {
+      "main": [
+        [
+          {
+            "node": "Monta consulta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monta consulta": {
+      "main": [
+        [
+          {
+            "node": "Busca produtos na API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca produtos na API": {
+      "main": [
+        [
+          {
+            "node": "Normaliza produtos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normaliza produtos": {
+      "main": [
+        [
+          {
+            "node": "Especialista em produtos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo de produtos": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Especialista em produtos",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "buscar_produto": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em produtos",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_estoque_baixo": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em produtos",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_valor_estoque": {
+      "ai_tool": [
+        [
+          {
+            "node": "Especialista em produtos",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "03 - Northwind: especialista em produtos",
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
