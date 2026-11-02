@@ -3,14 +3,11 @@
     {
       "parameters": {
         "public": true,
-        "authentication": "n8nUserAuth",
-        "includeUserInOutput": false,
-        "initialMessages": "Oi! Sou a assistente de gestão da Northwind Traders, uma empresa de exemplo. Pergunte sobre vendas, pedidos, produtos ou clientes.",
+        "mode": "webhook",
+        "authentication": "none",
         "options": {
-          "inputPlaceholder": "Ex.: quanto vendemos em abril de 1998?",
-          "subtitle": "Demonstração com dados públicos de exemplo",
-          "title": "Northwind",
-          "responseMode": "lastNode"
+          "responseMode": "lastNode",
+          "allowedOrigins": "https://SEU-SITE"
         }
       },
       "id": "8ff29d8f-b1fe-4d2b-8351-3304d150f7fd",
@@ -18,7 +15,7 @@
       "type": "@n8n/n8n-nodes-langchain.chatTrigger",
       "typeVersion": 1.5,
       "position": [
-        0,
+        -520,
         304
       ]
     },
@@ -301,6 +298,80 @@
         0,
         480
       ]
+    },
+    {
+      "id": "7d6f0c4e-1c3a-4f6b-9a11-1f6c6a0e0a01",
+      "name": "Limite de uso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const LIMITE_DIA = 60;\nconst LIMITE_CONVERSA = 15;\nconst TAMANHO_MAXIMO = 400;\n\nconst item = $input.first().json;\nconst texto = String(item.chatInput || '').trim();\nconst sessao = String(item.sessionId || 'sem-sessao').slice(0, 80);\nconst dados = $getWorkflowStaticData('global');\nconst dia = new Date().toISOString().slice(0, 10);\n\nif (dados.dia !== dia) {\n  dados.dia = dia;\n  dados.total = 0;\n  dados.sessoes = {};\n}\n\nlet aviso = '';\nif (!texto) aviso = 'Escreva uma pergunta para começar.';\nelse if (texto.length > TAMANHO_MAXIMO) aviso = 'Essa mensagem ficou longa. Envie uma pergunta com até 400 caracteres.';\nelse if (dados.total >= LIMITE_DIA) aviso = 'A demonstração atingiu o limite de hoje. Volte amanhã para testar.';\nelse if ((dados.sessoes[sessao] || 0) >= LIMITE_CONVERSA) aviso = 'Esta conversa atingiu o limite de 15 perguntas. Recarregue a página para começar outra.';\n\nif (!aviso) {\n  dados.total += 1;\n  dados.sessoes[sessao] = (dados.sessoes[sessao] || 0) + 1;\n}\n\nreturn [{ json: { ...item, chatInput: texto, pode_seguir: !aviso, aviso, uso_hoje: dados.total } }];"
+      }
+    },
+    {
+      "id": "7d6f0c4e-1c3a-4f6b-9a11-1f6c6a0e0a02",
+      "name": "Pode seguir?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -120,
+        304
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "pode-seguir",
+              "leftValue": "={{ $json.pode_seguir }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "7d6f0c4e-1c3a-4f6b-9a11-1f6c6a0e0a03",
+      "name": "Aviso de limite",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -120,
+        520
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "saida-aviso",
+              "name": "output",
+              "value": "={{ $json.aviso }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      }
     }
   ],
   "connections": {
@@ -308,7 +379,7 @@
       "main": [
         [
           {
-            "node": "Orquestrador",
+            "node": "Limite de uso",
             "type": "main",
             "index": 0
           }
@@ -386,6 +457,35 @@
         [
           {
             "node": "Orquestrador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limite de uso": {
+      "main": [
+        [
+          {
+            "node": "Pode seguir?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pode seguir?": {
+      "main": [
+        [
+          {
+            "node": "Orquestrador",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aviso de limite",
             "type": "main",
             "index": 0
           }

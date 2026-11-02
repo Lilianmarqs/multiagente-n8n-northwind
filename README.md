@@ -4,6 +4,8 @@ Chat em português que responde perguntas de gestão com dados da Northwind, uma
 
 **Tipo de projeto:** pessoal, desenvolvido com apoio de IA. Não é um sistema em produção.
 
+**Teste:** [abra o chat no portfólio](https://lilianmarqs.github.io/#projetos).
+
 ## O que ele responde
 
 - "Quanto vendemos em abril de 1998?"
@@ -39,6 +41,7 @@ flowchart LR
 - **Período obrigatório:** se a pergunta precisa de período e ele não foi dito, o assistente pergunta antes de consultar.
 - **Sem dados é diferente de falha:** as tools devolvem status próprios para cada situação.
 - **Somente leitura:** o assistente não altera dados e recusa assuntos fora da Northwind.
+- **Limites na demonstração:** 60 mensagens por dia, 15 por conversa e 400 caracteres por mensagem.
 
 ## Avaliação
 
@@ -62,7 +65,8 @@ Nas cinco rodadas feitas com gabarito independente em pandas, os acertos foram 2
 2. Crie uma credencial da OpenAI e selecione-a nos nós de modelo. Os fluxos usam `gpt-6-luna`, mas outro modelo compatível pode ser escolhido.
 3. Nas tools do orquestrador, selecione os quatro fluxos especialistas no lugar de `CONFIGURE_ESPECIALISTA_...`.
 4. Na avaliação, selecione o orquestrador no nó `Chama orquestrador`.
-5. Publique os fluxos e teste pelo chat.
+5. No nó `Chat da diretoria`, troque `https://SEU-SITE` pelo endereço do seu site.
+6. Publique os fluxos e teste pelo chat.
 
 ## Tecnologias
 
